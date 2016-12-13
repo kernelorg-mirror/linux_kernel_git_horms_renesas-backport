@@ -1003,8 +1003,7 @@ static void xhci_handle_cmd_set_deq(struct xhci_hcd *xhci, int slot_id,
 			break;
 		case COMP_CTX_STATE:
 			xhci_warn(xhci, "WARN Set TR Deq Ptr cmd failed due to incorrect slot or ep state.\n");
-			ep_state = le32_to_cpu(ep_ctx->ep_info);
-			ep_state &= EP_STATE_MASK;
+			ep_state = GET_EP_CTX_STATE(ep_ctx);
 			slot_state = le32_to_cpu(slot_ctx->dev_state);
 			slot_state = GET_SLOT_STATE(slot_state);
 			xhci_dbg_trace(xhci, trace_xhci_dbg_cancel_urb,
@@ -1096,12 +1095,12 @@ static void xhci_handle_cmd_reset_ep(struct xhci_hcd *xhci, int slot_id,
 }
 
 static void xhci_handle_cmd_enable_slot(struct xhci_hcd *xhci, int slot_id,
-		u32 cmd_comp_code)
+		struct xhci_command *command, u32 cmd_comp_code)
 {
 	if (cmd_comp_code == COMP_SUCCESS)
-		xhci->slot_id = slot_id;
+		command->slot_id = slot_id;
 	else
-		xhci->slot_id = 0;
+		command->slot_id = 0;
 }
 
 static void xhci_handle_cmd_disable_slot(struct xhci_hcd *xhci, int slot_id)
@@ -1183,7 +1182,7 @@ static void xhci_handle_cmd_nec_get_fw(struct xhci_hcd *xhci,
 		struct xhci_event_cmd *event)
 {
 	if (!(xhci->quirks & XHCI_NEC_HOST)) {
-		xhci->error_bitmask |= 1 << 6;
+		xhci_warn(xhci, "WARN NEC_GET_FW command on non-NEC host\n");
 		return;
 	}
 	xhci_dbg_trace(xhci, trace_xhci_dbg_quirks,
@@ -1325,14 +1324,13 @@ static void handle_cmd_completion(struct xhci_hcd *xhci,
 	cmd_trb = xhci->cmd_ring->dequeue;
 	cmd_dequeue_dma = xhci_trb_virt_to_dma(xhci->cmd_ring->deq_seg,
 			cmd_trb);
-	/* Is the command ring deq ptr out of sync with the deq seg ptr? */
-	if (cmd_dequeue_dma == 0) {
-		xhci->error_bitmask |= 1 << 4;
-		return;
-	}
-	/* Does the DMA address match our internal dequeue pointer address? */
-	if (cmd_dma != (u64) cmd_dequeue_dma) {
-		xhci->error_bitmask |= 1 << 5;
+	/*
+	 * Check whether the completion event is for our internal kept
+	 * command.
+	 */
+	if (!cmd_dequeue_dma || cmd_dma != (u64)cmd_dequeue_dma) {
+		xhci_warn(xhci,
+			  "ERROR mismatched command completion event\n");
 		return;
 	}
 
@@ -1371,7 +1369,7 @@ static void handle_cmd_completion(struct xhci_hcd *xhci,
 	cmd_type = TRB_FIELD_TO_TYPE(le32_to_cpu(cmd_trb->generic.field[3]));
 	switch (cmd_type) {
 	case TRB_ENABLE_SLOT:
-		xhci_handle_cmd_enable_slot(xhci, slot_id, cmd_comp_code);
+		xhci_handle_cmd_enable_slot(xhci, slot_id, cmd, cmd_comp_code);
 		break;
 	case TRB_DISABLE_SLOT:
 		xhci_handle_cmd_disable_slot(xhci, slot_id);
@@ -1418,7 +1416,7 @@ static void handle_cmd_completion(struct xhci_hcd *xhci,
 		break;
 	default:
 		/* Skip over unknown commands on the event ring */
-		xhci->error_bitmask |= 1 << 6;
+		xhci_info(xhci, "INFO unknown command type %d\n", cmd_type);
 		break;
 	}
 
@@ -1519,10 +1517,10 @@ static void handle_port_status(struct xhci_hcd *xhci,
 	bool bogus_port_status = false;
 
 	/* Port status change events always have a successful completion code */
-	if (GET_COMP_CODE(le32_to_cpu(event->generic.field[2])) != COMP_SUCCESS) {
-		xhci_warn(xhci, "WARN: xHC returned failed port status event\n");
-		xhci->error_bitmask |= 1 << 8;
-	}
+	if (GET_COMP_CODE(le32_to_cpu(event->generic.field[2])) != COMP_SUCCESS)
+		xhci_warn(xhci,
+			  "WARN: xHC returned failed port status event\n");
+
 	port_id = GET_PORT_ID(le32_to_cpu(event->generic.field[0]));
 	xhci_dbg(xhci, "Port Status Change Event for port %d\n", port_id);
 
@@ -1798,8 +1796,7 @@ static int xhci_requires_manual_halt_cleanup(struct xhci_hcd *xhci,
 		 * endpoint anyway.  Check if a babble halted the
 		 * endpoint.
 		 */
-		if ((ep_ctx->ep_info & cpu_to_le32(EP_STATE_MASK)) ==
-		    cpu_to_le32(EP_STATE_HALTED))
+		if (GET_EP_CTX_STATE(ep_ctx) == EP_STATE_HALTED)
 			return 1;
 
 	return 0;
@@ -2328,9 +2325,7 @@ static int handle_tx_event(struct xhci_hcd *xhci,
 	ep = &xdev->eps[ep_index];
 	ep_ring = xhci_dma_to_transfer_ring(ep, le64_to_cpu(event->buffer));
 	ep_ctx = xhci_get_ep_ctx(xhci, xdev->out_ctx, ep_index);
-	if (!ep_ring ||
-	    (le32_to_cpu(ep_ctx->ep_info) & EP_STATE_MASK) ==
-	    EP_STATE_DISABLED) {
+	if (!ep_ring ||  GET_EP_CTX_STATE(ep_ctx) == EP_STATE_DISABLED) {
 		xhci_err(xhci, "ERROR Transfer event for disabled endpoint "
 				"or incorrect stream ring\n");
 		xhci_err(xhci, "@%016llx %08x %08x %08x %08x\n",
@@ -2644,18 +2639,17 @@ static int xhci_handle_event(struct xhci_hcd *xhci)
 	int update_ptrs = 1;
 	int ret;
 
+	/* Event ring hasn't been allocated yet. */
 	if (!xhci->event_ring || !xhci->event_ring->dequeue) {
-		xhci->error_bitmask |= 1 << 1;
-		return 0;
+		xhci_err(xhci, "ERROR event ring not ready\n");
+		return -ENOMEM;
 	}
 
 	event = xhci->event_ring->dequeue;
 	/* Does the HC or OS own the TRB? */
 	if ((le32_to_cpu(event->event_cmd.flags) & TRB_CYCLE) !=
-	    xhci->event_ring->cycle_state) {
-		xhci->error_bitmask |= 1 << 2;
+	    xhci->event_ring->cycle_state)
 		return 0;
-	}
 
 	/*
 	 * Barrier between reading the TRB_CYCLE (valid) flag above and any
@@ -2663,7 +2657,7 @@ static int xhci_handle_event(struct xhci_hcd *xhci)
 	 */
 	rmb();
 	/* FIXME: Handle more event types. */
-	switch ((le32_to_cpu(event->event_cmd.flags) & TRB_TYPE_BITMASK)) {
+	switch (le32_to_cpu(event->event_cmd.flags) & TRB_TYPE_BITMASK) {
 	case TRB_TYPE(TRB_COMPLETION):
 		handle_cmd_completion(xhci, &event->event_cmd);
 		break;
@@ -2673,9 +2667,7 @@ static int xhci_handle_event(struct xhci_hcd *xhci)
 		break;
 	case TRB_TYPE(TRB_TRANSFER):
 		ret = handle_tx_event(xhci, &event->trans_event);
-		if (ret < 0)
-			xhci->error_bitmask |= 1 << 9;
-		else
+		if (ret >= 0)
 			update_ptrs = 0;
 		break;
 	case TRB_TYPE(TRB_DEV_NOTE):
@@ -2686,7 +2678,9 @@ static int xhci_handle_event(struct xhci_hcd *xhci)
 		    TRB_TYPE(48))
 			handle_vendor_event(xhci, event);
 		else
-			xhci->error_bitmask |= 1 << 3;
+			xhci_warn(xhci, "ERROR unknown event type %d\n",
+				  TRB_FIELD_TO_TYPE(
+				  le32_to_cpu(event->event_cmd.flags)));
 	}
 	/* Any of the above functions may drop and re-acquire the lock, so check
 	 * to make sure a watchdog timer didn't mark the host as non-responsive.
@@ -2931,8 +2925,7 @@ static int prepare_transfer(struct xhci_hcd *xhci,
 		return -EINVAL;
 	}
 
-	ret = prepare_ring(xhci, ep_ring,
-			   le32_to_cpu(ep_ctx->ep_info) & EP_STATE_MASK,
+	ret = prepare_ring(xhci, ep_ring, GET_EP_CTX_STATE(ep_ctx),
 			   num_trbs, mem_flags);
 	if (ret)
 		return ret;
@@ -3828,7 +3821,7 @@ int xhci_queue_isoc_tx_prepare(struct xhci_hcd *xhci, gfp_t mem_flags,
 	/* Check the ring to guarantee there is enough room for the whole urb.
 	 * Do not insert any td of the urb to the ring if the check failed.
 	 */
-	ret = prepare_ring(xhci, ep_ring, le32_to_cpu(ep_ctx->ep_info) & EP_STATE_MASK,
+	ret = prepare_ring(xhci, ep_ring, GET_EP_CTX_STATE(ep_ctx),
 			   num_trbs, mem_flags);
 	if (ret)
 		return ret;
@@ -3841,8 +3834,7 @@ int xhci_queue_isoc_tx_prepare(struct xhci_hcd *xhci, gfp_t mem_flags,
 
 	/* Calculate the start frame and put it in urb->start_frame. */
 	if (HCC_CFC(xhci->hcc_params) && !list_empty(&ep_ring->td_list)) {
-		if ((le32_to_cpu(ep_ctx->ep_info) & EP_STATE_MASK) ==
-				EP_STATE_RUNNING) {
+		if (GET_EP_CTX_STATE(ep_ctx) ==	EP_STATE_RUNNING) {
 			urb->start_frame = xep->next_frame_id;
 			goto skip_start_over;
 		}
