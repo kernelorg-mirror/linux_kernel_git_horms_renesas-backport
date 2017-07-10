@@ -184,7 +184,7 @@ static void sti_atomic_complete(struct sti_private *private,
 	drm_atomic_helper_wait_for_vblanks(drm, state);
 
 	drm_atomic_helper_cleanup_planes(drm, state);
-	drm_atomic_state_free(state);
+	drm_atomic_state_put(state);
 }
 
 static void sti_atomic_work(struct work_struct *work)
@@ -237,6 +237,7 @@ static int sti_atomic_commit(struct drm_device *drm,
 
 	drm_atomic_helper_swap_state(state, true);
 
+	drm_atomic_state_get(state);
 	if (nonblock)
 		sti_atomic_schedule(private, state);
 	else
@@ -295,9 +296,7 @@ static const struct file_operations sti_driver_fops = {
 	.poll = drm_poll,
 	.read = drm_read,
 	.unlocked_ioctl = drm_ioctl,
-#ifdef CONFIG_COMPAT
 	.compat_ioctl = drm_compat_ioctl,
-#endif
 	.release = drm_release,
 };
 
