@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Tahvo USB transceiver driver
  *
@@ -23,7 +24,7 @@
 #include <linux/io.h>
 #include <linux/clk.h>
 #include <linux/usb.h>
-#include <linux/extcon.h>
+#include <linux/extcon-provider.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/usb/otg.h>
