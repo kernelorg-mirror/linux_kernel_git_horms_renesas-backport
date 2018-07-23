@@ -156,6 +156,21 @@ DEFINE_EVENT(xhci_log_trb, xhci_queue_trb,
 	TP_ARGS(ring, trb)
 );
 
+DEFINE_EVENT(xhci_log_trb, xhci_dbc_handle_event,
+	TP_PROTO(struct xhci_ring *ring, struct xhci_generic_trb *trb),
+	TP_ARGS(ring, trb)
+);
+
+DEFINE_EVENT(xhci_log_trb, xhci_dbc_handle_transfer,
+	TP_PROTO(struct xhci_ring *ring, struct xhci_generic_trb *trb),
+	TP_ARGS(ring, trb)
+);
+
+DEFINE_EVENT(xhci_log_trb, xhci_dbc_gadget_ep_queue,
+	TP_PROTO(struct xhci_ring *ring, struct xhci_generic_trb *trb),
+	TP_ARGS(ring, trb)
+);
+
 DECLARE_EVENT_CLASS(xhci_log_free_virt_dev,
 	TP_PROTO(struct xhci_virt_device *vdev),
 	TP_ARGS(vdev),
@@ -185,21 +200,6 @@ DECLARE_EVENT_CLASS(xhci_log_free_virt_dev,
 DEFINE_EVENT(xhci_log_free_virt_dev, xhci_free_virt_device,
 	TP_PROTO(struct xhci_virt_device *vdev),
 	TP_ARGS(vdev)
-);
-
-DEFINE_EVENT(xhci_log_trb, xhci_dbc_handle_event,
-	TP_PROTO(struct xhci_ring *ring, struct xhci_generic_trb *trb),
-	TP_ARGS(ring, trb)
-);
-
-DEFINE_EVENT(xhci_log_trb, xhci_dbc_handle_transfer,
-	TP_PROTO(struct xhci_ring *ring, struct xhci_generic_trb *trb),
-	TP_ARGS(ring, trb)
-);
-
-DEFINE_EVENT(xhci_log_trb, xhci_dbc_gadget_ep_queue,
-	TP_PROTO(struct xhci_ring *ring, struct xhci_generic_trb *trb),
-	TP_ARGS(ring, trb)
 );
 
 DECLARE_EVENT_CLASS(xhci_log_virt_dev,
