@@ -940,14 +940,11 @@ static int pm_genpd_prepare(struct device *dev)
 static int genpd_finish_suspend(struct device *dev, bool poweroff)
 {
 	struct generic_pm_domain *genpd;
-	int ret;
+	int ret = 0;
 
 	genpd = dev_to_genpd(dev);
 	if (IS_ERR(genpd))
 		return -EINVAL;
-
-	if (dev->power.wakeup_path && genpd_is_active_wakeup(genpd))
-		return 0;
 
 	if (poweroff)
 		ret = pm_generic_poweroff_noirq(dev);
@@ -956,10 +953,19 @@ static int genpd_finish_suspend(struct device *dev, bool poweroff)
 	if (ret)
 		return ret;
 
-	if (genpd->dev_ops.stop && genpd->dev_ops.start) {
-		ret = pm_runtime_force_suspend(dev);
-		if (ret)
+	if (dev->power.wakeup_path && genpd_is_active_wakeup(genpd))
+		return 0;
+
+	if (genpd->dev_ops.stop && genpd->dev_ops.start &&
+	    !pm_runtime_status_suspended(dev)) {
+		ret = genpd_stop_dev(genpd, dev);
+		if (ret) {
+			if (poweroff)
+				pm_generic_restore_noirq(dev);
+			else
+				pm_generic_resume_noirq(dev);
 			return ret;
+		}
 	}
 
 	genpd_lock(genpd);
@@ -993,7 +999,7 @@ static int pm_genpd_suspend_noirq(struct device *dev)
 static int pm_genpd_resume_noirq(struct device *dev)
 {
 	struct generic_pm_domain *genpd;
-	int ret = 0;
+	int ret;
 
 	dev_dbg(dev, "%s()\n", __func__);
 
@@ -1002,21 +1008,21 @@ static int pm_genpd_resume_noirq(struct device *dev)
 		return -EINVAL;
 
 	if (dev->power.wakeup_path && genpd_is_active_wakeup(genpd))
-		return 0;
+		return pm_generic_resume_noirq(dev);
 
 	genpd_lock(genpd);
 	genpd_sync_power_on(genpd, true, 0);
 	genpd->suspended_count--;
 	genpd_unlock(genpd);
 
-	if (genpd->dev_ops.stop && genpd->dev_ops.start)
-		ret = pm_runtime_force_resume(dev);
+	if (genpd->dev_ops.stop && genpd->dev_ops.start &&
+	    !pm_runtime_status_suspended(dev)) {
+		ret = genpd_start_dev(genpd, dev);
+		if (ret)
+			return ret;
+	}
 
-	ret = pm_generic_resume_noirq(dev);
-	if (ret)
-		return ret;
-
-	return ret;
+	return pm_generic_resume_noirq(dev);
 }
 
 /**
@@ -1043,8 +1049,9 @@ static int pm_genpd_freeze_noirq(struct device *dev)
 	if (ret)
 		return ret;
 
-	if (genpd->dev_ops.stop && genpd->dev_ops.start)
-		ret = pm_runtime_force_suspend(dev);
+	if (genpd->dev_ops.stop && genpd->dev_ops.start &&
+	    !pm_runtime_status_suspended(dev))
+		ret = genpd_stop_dev(genpd, dev);
 
 	return ret;
 }
@@ -1067,8 +1074,9 @@ static int pm_genpd_thaw_noirq(struct device *dev)
 	if (IS_ERR(genpd))
 		return -EINVAL;
 
-	if (genpd->dev_ops.stop && genpd->dev_ops.start) {
-		ret = pm_runtime_force_resume(dev);
+	if (genpd->dev_ops.stop && genpd->dev_ops.start &&
+	    !pm_runtime_status_suspended(dev)) {
+		ret = genpd_start_dev(genpd, dev);
 		if (ret)
 			return ret;
 	}
@@ -1125,8 +1133,9 @@ static int pm_genpd_restore_noirq(struct device *dev)
 	genpd_sync_power_on(genpd, true, 0);
 	genpd_unlock(genpd);
 
-	if (genpd->dev_ops.stop && genpd->dev_ops.start) {
-		ret = pm_runtime_force_resume(dev);
+	if (genpd->dev_ops.stop && genpd->dev_ops.start &&
+	    !pm_runtime_status_suspended(dev)) {
+		ret = genpd_start_dev(genpd, dev);
 		if (ret)
 			return ret;
 	}
